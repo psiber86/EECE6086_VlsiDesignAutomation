@@ -299,7 +299,7 @@ int main(int argc, char* argv[])
         for (int n = 0; n < (cellcount/2); n++) {
             int gnmax = -1000;
             
-            printf("---- GENERATION: %i ITERATION: %i ----\n", generation, n);
+            printf("---- GENERATION: %i ITERATION: %i ----\n", generation++, n);
 
             if(debug) print_current_sets(a, b);
             if(debug) print_matrix(c);
