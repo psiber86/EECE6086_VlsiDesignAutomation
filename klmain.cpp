@@ -7,21 +7,22 @@
 #include <set>
 #include <cstring>
 #include <assert.h>
-#include <ctime>
 #include <pthread.h>
 #include <iterator>
+#include <vector>
 #include <math.h>
 
 //global variables
 static bool debug = false;
 static int cellcount = 0;
 static int netcount = 0;
-static std::map<int, std::map<int, int> > c;
+static int **c;
+static int *numlinks;
 static std::map<int, int> lock_hashmap;
 
 enum {
-    SETA = 0,  
-    SETB = 1
+    SETA = 1,  
+    SETB = 2
 }; 
 
 enum {
@@ -43,20 +44,31 @@ typedef struct {
     int gmax;
 } gmaxReturnInfo;
 
-void print_matrix(std::map<int, std::map<int, int> > mat)
+void print_matrix(int **mat)
 {
-    int element = 0;
-    for (std::map<int, std::map<int, int> >::iterator i1 = mat.begin(); 
-            i1 != mat.end(); i1++)
-    {
-        element++;
-        printf("element[%2i]: %2i: ", element, i1->first); 
-        for (std::map<int, int>::iterator i2 = i1->second.begin(); 
-             i2 != i1->second.end(); i2++) 
-        {
-            printf("%2i ", i2->first);
+    for (int i1 = 1; i1 <= cellcount; i1++) {
+        printf("%i: ", i1);
+        for (int i2 = 0; i2 < numlinks[i1]; i2++) {
+            printf("%2i ", c[i1][i2]);
         }
         printf("\n");
+    }
+}
+
+int searchConnectionsForElement(int srccell, int dstcell, int min, int max) 
+{
+    if (max < min) {
+        return -1;
+    } else {
+        int mid = float(max+min)/2.0;
+        
+        if (dstcell < c[srccell][mid]) {
+            return searchConnectionsForElement(srccell, dstcell, min, mid-1);
+        } else if (dstcell > c[srccell][mid]) {
+            return searchConnectionsForElement(srccell, dstcell, mid+1, max);
+        } else {
+            return mid;
+        }
     }
 }
 
@@ -67,28 +79,23 @@ void verify_set_constrs(std::set<int> a, std::set<int> b)
     assert(a.size() + b.size() == cellcount);
 }
 
-std::map<int, int> compDVals(std::set<int> a, std::set<int> b) 
+std::map<int, int> compDVals(int *setarray) 
 {
     std::map<int, int> d;
     int intsum;
     int extsum;
    
-    for (int i1 = 1; i1 < cellcount; i1++) {
+    for (int i1 = 1; i1 <= cellcount; i1++) {
         if (lock_hashmap[i1] == UNLOCKED) {
             intsum = 0;
             extsum = 0;
 
-            for (std::map<int, int>::iterator i2 = c[i1].begin(); 
-                 i2 != c[i1].end(); i2++)
+            for (int i2 = 0; i2 < numlinks[i1]; i2++) 
             {
-                if (c[i1].count(i2->first) > 0){
-                    if (a.count(i1) && b.count(i2->first) ||
-                        b.count(i1) && a.count(i2->first)) 
-                    {
-                        extsum++;
-                    } else {
-                        intsum++;
-                    }
+                if (setarray[i1] == setarray[c[i1][i2]]) {
+                    intsum++;
+                } else {
+                    extsum++;
                 }
             }
             if(debug) printf("cell %i has %i internal links and %i external links\n", i1, intsum, extsum);
@@ -99,18 +106,15 @@ std::map<int, int> compDVals(std::set<int> a, std::set<int> b)
     return d;
 }
 
-int compute_cutset(std::set<int> a, std::set<int> b, std::map<int, std::map<int, int> > c)
+int compute_cutset(int *setarray)
 {
     int cur_cutset = 0; 
 
     for (int i1 = 1; i1 <= cellcount; i1++) {
-        for (std::map<int, int>::iterator i2 = c[i1].begin(); 
-                 i2 != c[i1].end(); i2++)
+        for (int i2 = 0; i2 < numlinks[i1]; i2++) 
         {
-            if (i2->first > i1) { 
-                if (a.count(i1) && b.count(i2->first) ||
-                    b.count(i1) && a.count(i2->first)) 
-                {
+            if (c[i1][i2] > i1) { 
+                if (setarray[i1] != setarray[c[i1][i2]]) {
                     cur_cutset++;
                 } 
             }
@@ -146,15 +150,21 @@ gmaxReturnInfo *compGmax(std::set<int> a, std::set<int> b, std::map<int, int> dv
             for (std::set<int>::iterator i2 = b.begin(); i2 != b.end(); i2++) {
                 if (lock_hashmap[*i2] != LOCKED)
                 {
-                    g = dvals[*i1] + dvals[*i2] - (2 * c[*i1].count(*i2));
+                    int c_i1_i2 = 0;
+                    int cellind = searchConnectionsForElement(*i1, *i2, 0, numlinks[*i1]);
+                    if (cellind >= 0) {
+                        c_i1_i2 = 1;
+                    }
+                    
+                    g = dvals[*i1] + dvals[*i2] - (2 * c_i1_i2);
 
                     if(debug) {
                         printf("\tg_%i_%i = D_%i + D_%i - 2c_%i_%i = %i + %i - 2(%i) = %i\n",
                                 *i1, *i2, *i1, *i2, *i1, *i2,
-                                dvals[*i1], dvals[*i2], c[*i1].count(*i2),
+                                dvals[*i1], dvals[*i2], c_i1_i2,
                                 g);
                     }
-                    if (g >= gmax) {
+                    if (g > gmax) {
                         gmax = g;
                         ret->gmax = g;
                         ret->ai = *i1;
@@ -167,42 +177,44 @@ gmaxReturnInfo *compGmax(std::set<int> a, std::set<int> b, std::map<int, int> dv
     return ret;
 }
 
-void *thr_compG(void *arg) {
-    threadParamInfo *info = (threadParamInfo*)arg;
-    int count = 0;
-    std::set<int> suba;
-    int subcellcount = ceil(float(info->unlockedsetsize)/float(info->numthreads));
-    int start = subcellcount*info->thrId;
+//void *thr_compG(void *arg) {
+//    threadParamInfo *info = (threadParamInfo*)arg;
+//    int count = 0;
+//    std::set<int> suba;
+//    int subcellcount = ceil(float(info->unlockedsetsize)/float(info->numthreads));
+//    int start = subcellcount*info->thrId;
+//
+//    //redefine set A based on input params
+//    if (debug) printf("thread%i creating subset of a with %i elements (%i unlocked/ %i threads): ", 
+//                      info->thrId, subcellcount, info->unlockedsetsize, info->numthreads);
+//    for (std::set<int>::iterator i = info->a.begin(); i != info->a.end(); i++) {
+//        if (count >= start + subcellcount) {
+//            break; 
+//        } else if (start <= count) {
+//            suba.insert(*i);
+//            printf("%i ", *i);
+//        } 
+//        count++;
+//    }
+//    printf("\n");
+//
+//    gmaxReturnInfo *ret = compGmax(suba, info->b, info->dvals);
+//
+//    if(debug) printf("thread%i found g=%i @ ai = %i, bi = %i\n", info->thrId, ret->gmax, ret->ai, ret->bj); 
+//
+//    return (void*) ret; 
+//}
 
-    //redefine set A based on input params
-    if (debug) printf("thread%i creating subset of a with %i elements (%i unlocked/ %i threads): ", 
-                      info->thrId, subcellcount, info->unlockedsetsize, info->numthreads);
-    for (std::set<int>::iterator i = info->a.begin(); i != info->a.end(); i++) {
-        if (count >= start + subcellcount) {
-            break; 
-        } else if (start <= count) {
-            suba.insert(*i);
-            printf("%i ", *i);
-        } 
-        count++;
-    }
-    printf("\n");
-
-    gmaxReturnInfo *ret = compGmax(suba, info->b, info->dvals);
-
-    if(debug) printf("thread%i found g=%i @ ai = %i, bi = %i\n", info->thrId, ret->gmax, ret->ai, ret->bj); 
-
-    return (void*) ret; 
-}
 
 int main(int argc, char* argv[])
 {
     int line;
     int linenum = 0;
+    int *setarray;
     std::set<int> a, b;
     int cutset = 0;
     int gmax = -1000;
-    int count = 0;
+    int generation = 0;
 
     int start_s = clock(); 
 
@@ -215,38 +227,58 @@ int main(int argc, char* argv[])
 
     //get netlist, populate data structs
     int tmp1, tmp2;
+    std::vector<std::set<int> > links;
     while (std::cin >> tmp1) {
         if (linenum == 0) {
             cellcount = tmp1;
+            setarray = new int[cellcount+1]; //ind 0 will never be used
+            memset(setarray, 0, sizeof(int)*(cellcount+1));
+
+            //experimenting with 2d array data struct
+            links.resize(cellcount+1);
+            numlinks = new int[cellcount+1];
+            c = new int*[cellcount+1];
         } else if (linenum == 1) {
             netcount = tmp1;
         } else {
             std::cin >> tmp2;
-            if (a.count(tmp1) == 0 && b.count(tmp1) == 0) {
+            if (!setarray[tmp1]) {
                 if (a.size() < cellcount/2) {
                     if(debug) printf("inserting cell %i into set a\n", tmp1);
                     a.insert(tmp1); 
+                    setarray[tmp1] = SETA;
                 } else { 
                     if(debug) printf("inserting cell %i into set b\n", tmp1);
                     b.insert(tmp1);
+                    setarray[tmp1] = SETB;
                 }
             }
-            
-            c[tmp1][tmp2] = 1;
-            c[tmp2][tmp1] = 1; 
+            links[tmp1].insert(tmp2);
+            links[tmp2].insert(tmp1);
         } 
         linenum++;
-        if(debug) printf("reading file @ line %i\n", linenum);
+    }
+
+    for (int i1 = 1; i1 <= cellcount; i1++) {
+        int ind = 0;
+        c[i1] = new int[links[i1].size()];
+        numlinks[i1] = links[i1].size();
+        for (std::set<int>::iterator i2 = links[i1].begin(); i2 != links[i1].end(); i2++) {
+            c[i1][ind++] = *i2; 
+        }
     }
     
     //fill in unconnected nodes
     if (b.size() != a.size()) {
         for (int i = 1; i <= cellcount; i++ ) {
-            if (a.count(i) == 0 && b.count(i) == 0) {
+            if (!setarray[i]) {
                 b.insert(i); 
+                setarray[i] = SETB;
             }
         }
     }
+
+    links.clear(); 
 
     print_matrix(c);
 
@@ -255,7 +287,7 @@ int main(int argc, char* argv[])
         verify_set_constrs(a, b); 
 
         //compute D values for all a in A1 and b in B1    
-        std::map<int, int> dvals = compDVals(a, b);
+        std::map<int, int> dvals = compDVals(setarray);
         if(debug) printf("**********************************************\n");
      
         int gmax = -1000;
@@ -265,55 +297,52 @@ int main(int argc, char* argv[])
         int ai[cellcount/2];
         int bj[cellcount/2];
         for (int n = 0; n < (cellcount/2); n++) {
-            int stop_s = clock();
-            std::cout << "elapsed time: " << (stop_s - start_s)/double(CLOCKS_PER_SEC)*1000  << " ms" << std::endl;
-
             int gnmax = -1000;
             
-            if(debug) printf("---- ITER %i ----\n", n);
+            printf("---- GENERATION: %i ITERATION: %i ----\n", generation, n);
 
             if(debug) print_current_sets(a, b);
-            if (debug) print_matrix(c);
-            cutset = compute_cutset(a, b, c);
+            if(debug) print_matrix(c);
+            cutset = compute_cutset(setarray);
             if(debug) printf("cutset = %i\n", cutset);
 
             //find a[i] from A1 and b[j] from B1, so g[n] = D[a[i]] + D[b[j]] - 2*c[a[i]][b[j]] is maximal
             if (CORES > 1) {
-                int numthreads;
-                threadParamInfo paramInfo[CORES];
-                pthread_t thr[CORES];
-
-                std::set<int>::iterator i1 = a.begin();
-                if (a.size()-n < CORES) {
-                    numthreads = a.size()-n;
-                } else {
-                    numthreads = CORES;
-                }
-                printf("%i unlocked cells in set a, creating %i threads\n", a.size()-n, numthreads);
-                for (int i = 0; i < numthreads; i++) {
-                    paramInfo[i].a = a;
-                    paramInfo[i].b = b;
-                    paramInfo[i].dvals = dvals;
-                    paramInfo[i].numthreads = numthreads;
-                    paramInfo[i].thrId = i;
-                    paramInfo[i].unlockedsetsize = a.size()-n;
-                    if(debug) printf("spawning child thread %i to compute g for first 1/%i of set a cells\n",
-                                     paramInfo[i].thrId, paramInfo[i].numthreads);
-
-                    pthread_create(&thr[i], NULL, &thr_compG, (void*)&paramInfo[i]);
-                }
-                for (int i = 0; i < numthreads; i++) {
-                    void *p;
-                    pthread_join(thr[i], &p);
-                    gmaxReturnInfo *ret = static_cast<gmaxReturnInfo *>(p);
-
-                    //compare gmax returned from threads
-                    if (ret->gmax > gnmax) {
-                        gnmax = ret->gmax;
-                        ai[n] = ret->ai;
-                        bj[n] = ret->bj;
-                    }
-                }
+//                int numthreads;
+//                threadParamInfo paramInfo[CORES];
+//                pthread_t thr[CORES];
+//
+//                std::set<int>::iterator i1 = a.begin();
+//                if (a.size()-n < CORES) {
+//                    numthreads = a.size()-n;
+//                } else {
+//                    numthreads = CORES;
+//                }
+//                printf("%i unlocked cells in set a, creating %i threads\n", a.size()-n, numthreads);
+//                for (int i = 0; i < numthreads; i++) {
+//                    paramInfo[i].a = a;
+//                    paramInfo[i].b = b;
+//                    paramInfo[i].dvals = dvals;
+//                    paramInfo[i].numthreads = numthreads;
+//                    paramInfo[i].thrId = i;
+//                    paramInfo[i].unlockedsetsize = a.size()-n;
+//                    if(debug) printf("spawning child thread %i to compute g for first 1/%i of set a cells\n",
+//                                     paramInfo[i].thrId, paramInfo[i].numthreads);
+//
+//                    pthread_create(&thr[i], NULL, &thr_compG, (void*)&paramInfo[i]);
+//                }
+//                for (int i = 0; i < numthreads; i++) {
+//                    void *p;
+//                    pthread_join(thr[i], &p);
+//                    gmaxReturnInfo *ret = static_cast<gmaxReturnInfo *>(p);
+//
+//                    //compare gmax returned from threads
+//                    if (ret->gmax > gnmax) {
+//                        gnmax = ret->gmax;
+//                        ai[n] = ret->ai;
+//                        bj[n] = ret->bj;
+//                    }
+//                }
             } else {
                 gmaxReturnInfo *ret = compGmax(a, b, dvals);
                 ai[n] = ret->ai;
@@ -331,6 +360,8 @@ int main(int argc, char* argv[])
             a.insert(bj[n]);
             b.erase(bj[n]);
             b.insert(ai[n]);
+            setarray[ai[n]] = SETB;
+            setarray[bj[n]] = SETA;
 
             if(debug) printf("2) swapped a[i]=%i with b[j]=%i\n", ai[n], bj[n]);
 
@@ -355,37 +386,39 @@ int main(int argc, char* argv[])
             if (debug) printf("recomputing dvals\n");
             for (std::map<int, int>::iterator i1 = dvals.begin(); i1 != dvals.end(); i1++) {
                 //if connected to locked vertices
-                if (c[ai[n]].count(i1->first) == 0 && c[bj[n]].count(i1->first) == 0) {
+                if (searchConnectionsForElement(i1->first, ai[n], 0, numlinks[i1->first]) < 0 &&
+                    searchConnectionsForElement(i1->first, bj[n], 0, numlinks[i1->first]) < 0) {
                     continue;
                 }
 
                 int old_dval = dvals[i1->first];
                 int c_ai_curnode, c_bj_curnode = 0;
-                if (c[i1->first].count(ai[n]) > 0) {
-                    c_ai_curnode = c[i1->first][ai[n]];
-                } else {
-                    c_ai_curnode = 0;
-                }
-                if (c[i1->first].count(bj[n]) > 0) {
-                    c_bj_curnode = c[i1->first][bj[n]];
-                } else {
-                    c_bj_curnode = 0;
+                int ai_ind = searchConnectionsForElement(i1->first, ai[n], 0, numlinks[i1->first]);
+                if (ai_ind >= 0) {
+                    c_ai_curnode = 1;
+                } 
+               
+                int bj_ind = searchConnectionsForElement(i1->first, bj[n], 0, numlinks[i1->first]);
+                if (bj_ind >= 0) {
+                    c_bj_curnode = 1;
                 }
 
-                if (a.count(i1->first) > 0) {
+                if (setarray[i1->first] == SETA) {
                     dvals[i1->first] = old_dval + 2*(c_ai_curnode - c_bj_curnode);
                     if(debug) {
                         printf("\tD_%i' = D_%i + 2(c_%i_%i - c_%i_%i) = %i + 2(%i - %i) = %i\n",
                                i1->first, i1->first, i1->first, ai[n], i1->first, bj[n], old_dval, c_ai_curnode, 
                                c_bj_curnode, dvals[i1->first]); 
                     }
-                } else if (b.count(i1->first) > 0) {
+                } else if (setarray[i1->first] == SETB) {
                     dvals[i1->first] = old_dval + 2*(c_bj_curnode - c_ai_curnode);
                     if(debug) {
                         printf("\tD_%i' = D_%i + 2(c_%i_%i - c_%i_%i) = %i + 2(%i - %i) = %i\n",
                                i1->first, i1->first, i1->first, bj[n], i1->first, ai[n], old_dval, c_bj_curnode, 
                                c_ai_curnode, dvals[i1->first]); 
                     }
+                } else {
+                    printf("ERROR: SHOULD NOT GET HERE!\n");
                 }
             }
         }
@@ -409,6 +442,8 @@ int main(int argc, char* argv[])
                 a.insert(ai[i]);
                 b.erase(ai[i]);
                 b.insert(bj[i]);
+                setarray[ai[i]] = SETA;
+                setarray[bj[i]] = SETB;
             }
         }
     } while (gmax > 0);
@@ -417,14 +452,9 @@ int main(int argc, char* argv[])
     verify_set_constrs(a, b);
 
     //print final partitioning
-    cutset = compute_cutset(a, b, c);
-    std::cout << "final cutset: " << cutset << std::endl;
+    cutset = compute_cutset(setarray);
+    std::cout << cutset << std::endl;
     print_current_sets(a, b);
-
-    int stop_s = clock();
-    std::cout << "time: " << (stop_s - start_s)/double(CLOCKS_PER_SEC)*1000  << " ms" << std::endl;
 
     return 0;
 }
-
-
