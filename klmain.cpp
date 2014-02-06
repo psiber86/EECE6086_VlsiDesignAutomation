@@ -3,17 +3,21 @@
 #include <iostream>
 #include <fstream>
 #include <string>
-#include <vector>
 #include <map>
 #include <set>
 #include <cstring>
 #include <assert.h>
 #include <ctime>
+#include <pthread.h>
+#include <iterator>
+#include <math.h>
 
 //global variables
-bool debug = false;
-int cellcount = 0;
-int netcount = 0;
+static bool debug = false;
+static int cellcount = 0;
+static int netcount = 0;
+static std::map<int, std::map<int, int> > c;
+static std::map<int, int> lock_hashmap;
 
 enum {
     SETA = 0,  
@@ -24,6 +28,19 @@ enum {
     UNLOCKED = 0,
     LOCKED
 };
+
+typedef struct {
+    int thrId;
+    std::set<int> a, b;
+    std::map<int, int> dvals;
+    int numcores;
+} threadParamInfo;
+
+typedef struct {
+    int ai;
+    int bj;
+    int gmax;
+} gmaxReturnInfo;
 
 void print_matrix(std::map<int, std::map<int, int> > mat)
 {
@@ -42,43 +59,30 @@ void print_matrix(std::map<int, std::map<int, int> > mat)
     }
 }
 
-void verify_set_constrs(std::map<int, int> setmap)
+void verify_set_constrs(std::set<int> a, std::set<int> b)
 {
-    int sizea = 0;
-    int sizeb = 0;
-    int numcells = 0;
-
-    for (std::map<int, int>::iterator i3 = setmap.begin(); i3 != setmap.end(); i3++) {
-        numcells++;
-        if (setmap[i3->first] == SETA) {
-            sizea++;
-        } else {
-            sizeb++;
-        }
-    }
-
-    assert(sizea == sizeb);
-    assert(numcells == cellcount);
+    if(debug) printf("sizeof(a)=%i\tsizeof(b)=%i\n", a.size(), b.size());
+    assert(a.size() == b.size());
+    assert(a.size() + b.size() == cellcount);
 }
 
-std::map<int, int> compDVals(std::map<int, std::map<int, int> > c,
-                           std::map<int, int> setmap,
-                           std::map<int, int> lockmap) 
+std::map<int, int> compDVals(std::set<int> a, std::set<int> b) 
 {
     std::map<int, int> d;
     int intsum;
     int extsum;
    
-    for (std::map<int, int>::iterator i1 = setmap.begin(); i1 != setmap.find(cellcount); i1++) {
-        if (lockmap[i1->first] == UNLOCKED) {
+    for (int i1 = 1; i1 < cellcount; i1++) {
+        if (lock_hashmap[i1] == UNLOCKED) {
             intsum = 0;
             extsum = 0;
 
-            for (std::map<int, int>::iterator i2 = c[i1->first].begin(); 
-                 i2 != c[i1->first].end(); i2++)
+            for (std::map<int, int>::iterator i2 = c[i1].begin(); 
+                 i2 != c[i1].end(); i2++)
             {
-                if (c[i1->first].count(i2->first) > 0){
-                    if (setmap[i1->first] != setmap[i2->first]) 
+                if (c[i1].count(i2->first) > 0){
+                    if (a.count(i1) && b.count(i2->first) ||
+                        b.count(i1) && a.count(i2->first)) 
                     {
                         extsum++;
                     } else {
@@ -86,24 +90,26 @@ std::map<int, int> compDVals(std::map<int, std::map<int, int> > c,
                     }
                 }
             }
-            if(debug) printf("cell %i has %i internal links and %i external links\n", i1->first, intsum, extsum);
+            if(debug) printf("cell %i has %i internal links and %i external links\n", i1, intsum, extsum);
         } 
-        d[i1->first] = (extsum - intsum);
+        d[i1] = (extsum - intsum);
     }
 
     return d;
 }
 
-int compute_cutset(std::map<int, int> setmap, std::map<int, std::map<int, int> > c)
+int compute_cutset(std::set<int> a, std::set<int> b, std::map<int, std::map<int, int> > c)
 {
     int cur_cutset = 0; 
 
-    for (std::map<int, int>::iterator i1 = setmap.begin(); i1 != setmap.end(); i1++) {
-        for (std::map<int, int>::iterator i2 = c[i1->first].begin(); 
-                 i2 != c[i1->first].end(); i2++)
+    for (int i1 = 1; i1 <= cellcount; i1++) {
+        for (std::map<int, int>::iterator i2 = c[i1].begin(); 
+                 i2 != c[i1].end(); i2++)
         {
-            if (i2->first > i1->first) { 
-                if (setmap[i1->first] != setmap[i2->first]) {
+            if (i2->first > i1) { 
+                if (a.count(i1) && b.count(i2->first) ||
+                    b.count(i1) && a.count(i2->first)) 
+                {
                     cur_cutset++;
                 } 
             }
@@ -112,98 +118,141 @@ int compute_cutset(std::map<int, int> setmap, std::map<int, std::map<int, int> >
     return cur_cutset;
 }
 
+void print_current_sets(std::set<int> a, std::set<int> b) {
 
-void print_current_sets(std::map<int, int> sets)
+    for (std::set<int>::iterator i = a.begin(); i != a.end(); i++) {
+        printf("%i ", *i);
+    }
+    printf("\n");
+    for (std::set<int>::iterator i = b.begin(); i != b.end(); i++) {
+        printf("%i ", *i);
+    }
+    printf("\n");
+}
+
+gmaxReturnInfo *compGmax(std::set<int> a, std::set<int> b, std::map<int, int> dvals)
 {
-    int a[cellcount/2];
-    int b[cellcount/2];
-    int acount = 0;
-    int bcount = 0;
+    gmaxReturnInfo *ret = (gmaxReturnInfo*)malloc(sizeof(gmaxReturnInfo));
+    if (ret == NULL) {
+        printf("MALLOC ERROR\n");
+        exit(1);
+    }
+    int gmax = -1000;
+    int g = 0;
 
-    for (std::map<int, int>::iterator i1 = sets.begin(); i1 != sets.end(); i1++) {
-        if (sets[i1->first] == SETA) {
-            a[acount++] = i1->first;
+    for (std::set<int>::iterator i1 = a.begin(); i1 != a.end(); i1++) {
+        if (lock_hashmap[*i1] != LOCKED) { 
+            for (std::set<int>::iterator i2 = b.begin(); i2 != b.end(); i2++) {
+                if (lock_hashmap[*i2] != LOCKED)
+                {
+                    g = dvals[*i1] + dvals[*i2] - (2 * c[*i1].count(*i2));
+
+                    if(debug) {
+                        printf("\tg_%i_%i = D_%i + D_%i - 2c_%i_%i = %i + %i - 2(%i) = %i\n",
+                                *i1, *i2, *i1, *i2, *i1, *i2,
+                                dvals[*i1], dvals[*i2], c[*i1].count(*i2),
+                                g);
+                    }
+                    if (g >= gmax) {
+                        gmax = g;
+                        ret->gmax = g;
+                        ret->ai = *i1;
+                        ret->bj = *i2;
+                    }
+                }
+            }
+        }
+    }
+    return ret;
+}
+
+void *thr_compG(void *arg) {
+    threadParamInfo *info = (threadParamInfo*)arg;
+    int count = 0;
+    std::set<int> suba;
+    int subcellcount = floor(info->a.size()/info->numcores);
+
+    //redefine set A based on input params
+    std::set<int>::iterator ia = info->a.begin();
+    //advance to starting cell
+    std::advance(ia, subcellcount*info->thrId);
+    if (debug) printf("creating subset of a with %i elements starting with element %i\n", subcellcount, *ia);
+    for (std::set<int>::iterator i = ia; i != info->a.end(); i++) {
+        if (count++ < subcellcount) {
+            suba.insert(*i);
         } else {
-            b[bcount++] = i1->first;
+            break;
         }
     }
 
-    printf("set a\t\tset b\n");
-    for (int i = 0; i < cellcount/2; i++) {
-        printf("%5i\t\t%5i\n", a[i], b[i]); 
-    }
+    gmaxReturnInfo *ret = compGmax(suba, info->b, info->dvals);
+
+    if(debug) printf("thread%i found g=%i @ ai = %i, bi = %i\n", info->thrId, ret->gmax, ret->ai, ret->bj); 
+
+    return (void*) ret; 
 }
 
 int main(int argc, char* argv[])
 {
     int line;
     int linenum = 0;
-    std::map<int, std::map<int, int> > c;
-    std::map<int, int> set_hashmap, lock_hashmap;
+    std::set<int> a, b;
     int cutset = 0;
     int gmax = -1000;
     int count = 0;
 
     int start_s = clock(); 
 
-    if (argc < 2) {
-        std::cout << "Usage: klalgo <filename> [-d]" << std::endl;
+    if (argc < 1) {
+        std::cout << "Usage: klalgo [-d]" << std::endl;
         exit(0);
-    } else if (argc == 3 && std::string(argv[2]) == "-d") {
+    } else if (argc == 2 && std::string(argv[1]) == "-d") {
         debug = true;
     }
 
     //get netlist, populate data structs
-    std::ifstream infile(argv[1]);
-    if (infile.is_open()) {
-        while (1) {
-            int tmp1, tmp2;
-            infile >> tmp1;
-            if (infile.eof()) {
-                break;
-            } else if (linenum == 0) {
-                cellcount = tmp1;
-            } else if (linenum == 1) {
-                netcount = tmp1;
-            } else {
-                infile >> tmp2;
-                if (set_hashmap.count(tmp1) == 0) {
-                    if (set_hashmap.size() < cellcount/2) {
-                        if(debug) printf("inserting cell %i into set a\n", tmp1);
-                        set_hashmap[tmp1] = SETA;
-                    } else { 
-                        if(debug) printf("inserting cell %i into set b\n", tmp1);
-                        set_hashmap[tmp1] = SETB;
-                    }
+    int tmp1, tmp2;
+    while (std::cin >> tmp1) {
+        if (linenum == 0) {
+            cellcount = tmp1;
+        } else if (linenum == 1) {
+            netcount = tmp1;
+        } else {
+            std::cin >> tmp2;
+            if (a.count(tmp1) == 0 && b.count(tmp1) == 0) {
+                if (a.size() < cellcount/2) {
+                    if(debug) printf("inserting cell %i into set a\n", tmp1);
+                    a.insert(tmp1); 
+                } else { 
+                    if(debug) printf("inserting cell %i into set b\n", tmp1);
+                    b.insert(tmp1);
                 }
-                
-                c[tmp1][tmp2] = 1;
-                c[tmp2][tmp1] = 1; 
-            } 
-            linenum++;
-            if(debug) printf("reading file @ line %i\n", linenum);
-        }
-        infile.close();
-    } else {
-        std::cout << "Unable to open file" << std::endl;
-        return 0;
+            }
+            
+            c[tmp1][tmp2] = 1;
+            c[tmp2][tmp1] = 1; 
+        } 
+        linenum++;
+        if(debug) printf("reading file @ line %i\n", linenum);
     }
     
     //fill in unconnected nodes
-    if (set_hashmap.size() != cellcount) {
+    if (b.size() != a.size()) {
         for (int i = 1; i <= cellcount; i++ ) {
-            if (set_hashmap.count(i) == 0) {
-                set_hashmap[i] = SETB; 
+            if (a.count(i) == 0 && b.count(i) == 0) {
+                b.insert(i); 
             }
         }
     }
 
+    print_matrix(c);
+
     do {
         //make sure initial coniditions are satisfied
-        verify_set_constrs(set_hashmap); 
+        verify_set_constrs(a, b); 
 
         //compute D values for all a in A1 and b in B1    
-        std::map<int, int> dvals = compDVals(c, set_hashmap, lock_hashmap);
+        std::map<int, int> dvals = compDVals(a, b);
         if(debug) printf("**********************************************\n");
      
         int gmax = -1000;
@@ -220,33 +269,44 @@ int main(int argc, char* argv[])
             
             if(debug) printf("---- ITER %i ----\n", n);
 
-            if(debug) print_current_sets(set_hashmap);
+            if(debug) print_current_sets(a, b);
             if (debug) print_matrix(c);
-            cutset = compute_cutset(set_hashmap, c);
+            cutset = compute_cutset(a, b, c);
             if(debug) printf("cutset = %i\n", cutset);
 
             //find a[i] from A1 and b[j] from B1, so g[n] = D[a[i]] + D[b[j]] - 2*c[a[i]][b[j]] is maximal
-            for (std::map<int, int>::iterator i1 = set_hashmap.begin(); i1 != set_hashmap.end(); i1++) {
-                if (set_hashmap[i1->first] == SETA && lock_hashmap[i1->first] != LOCKED) { 
-                    for (std::map<int, int>::iterator i2 = set_hashmap.begin(); i2 != set_hashmap.end(); i2++) {
-                        if (set_hashmap[i2->first] == SETB && lock_hashmap[i2->first] != LOCKED)
-                        {
-                            g[n] = dvals[i1->first] + dvals[i2->first] - (2 * c[i1->first].count(i2->first));
+            if (CORES > 1) {
+                threadParamInfo paramInfo;
+                pthread_t thr[CORES];
 
-                            if(debug) {
-                                printf("\tg_%i_%i = D_%i + D_%i - 2c_%i_%i = %i + %i - 2(%i) = %i\n",
-                                        i1->first, i2->first, i1->first, i2->first, i1->first, i2->first,
-                                        dvals[i1->first], dvals[i2->first], c[i1->first].count(i2->first),
-                                        g[n]);
-                            }
-                            if (g[n] >= gnmax) {
-                                gnmax = g[n];
-                                ai[n] = i1->first;
-                                bj[n] = i2->first;
-                            }
-                        }
+                std::set<int>::iterator i1 = a.begin();
+                paramInfo.a = a;
+                paramInfo.b = b;
+                paramInfo.dvals = dvals;
+                paramInfo.numcores = CORES;
+                for (int i = 0; i < CORES; i++) {
+                    printf("spawning child thread %i to compute g for first 1/%i of set a cells\n", i, CORES);
+                    paramInfo.thrId = i;
+
+                    pthread_create(&thr[i], NULL, &thr_compG, (void*)&paramInfo);
+                }
+                for (int i = 0; i < CORES; i++) {
+                    void *p;
+                    pthread_join(thr[i], &p);
+                    gmaxReturnInfo *ret = static_cast<gmaxReturnInfo *>(p);
+
+                    //compare gmax returned from threads
+                    if (ret->gmax > gnmax) {
+                        gnmax = ret->gmax;
+                        ai[n] = ret->ai;
+                        bj[n] = ret->bj;
                     }
                 }
+            } else {
+                gmaxReturnInfo *ret = compGmax(a, b, dvals);
+                ai[n] = ret->ai;
+                bj[n] = ret->bj;
+                gnmax = ret->gmax;
             }
 
             assert (ai[n] != 0 && bj[n] != 0);
@@ -255,8 +315,10 @@ int main(int argc, char* argv[])
             if(debug) printf("1) found g[%i]=%i @ ai = %i, bi = %i\n", n, gnmax, ai[n], bj[n]); 
                     
             //move a[i] to B1 and b[j] to A1
-            set_hashmap[ai[n]] = SETB;
-            set_hashmap[bj[n]] = SETA;
+            a.erase(ai[n]);
+            a.insert(bj[n]);
+            b.erase(bj[n]);
+            b.insert(ai[n]);
 
             if(debug) printf("2) swapped a[i]=%i with b[j]=%i\n", ai[n], bj[n]);
 
@@ -298,14 +360,14 @@ int main(int argc, char* argv[])
                     c_bj_curnode = 0;
                 }
 
-                if (set_hashmap[i1->first] == SETA) {
+                if (a.count(i1->first) > 0) {
                     dvals[i1->first] = old_dval + 2*(c_ai_curnode - c_bj_curnode);
                     if(debug) {
                         printf("\tD_%i' = D_%i + 2(c_%i_%i - c_%i_%i) = %i + 2(%i - %i) = %i\n",
                                i1->first, i1->first, i1->first, ai[n], i1->first, bj[n], old_dval, c_ai_curnode, 
                                c_bj_curnode, dvals[i1->first]); 
                     }
-                } else if (set_hashmap[i1->first] == SETB) {
+                } else if (b.count(i1->first) > 0) {
                     dvals[i1->first] = old_dval + 2*(c_bj_curnode - c_ai_curnode);
                     if(debug) {
                         printf("\tD_%i' = D_%i + 2(c_%i_%i - c_%i_%i) = %i + 2(%i - %i) = %i\n",
@@ -325,27 +387,27 @@ int main(int argc, char* argv[])
 
         if (gmax > 0) {
             if(debug) printf("sets before swapping k cells\n");
-            if(debug) print_current_sets(set_hashmap);
+            if(debug) print_current_sets(a, b);
             if(debug) printf("5) swapping a[0],...a[%i] and b[0],...,b[%i]\n", finalk, finalk);
 
             //exchange a[1], a[2],...,a[k] with b[1], b[2],...b[k]
             for (int i = 0; i <= finalk; i++) {
                 if(debug) printf("swapping %i with %i\n", ai[i], bj[i]);
-                //cell was originally in A, so switch it back to A
-                set_hashmap[ai[i]] = SETA;
-                //cell was originally in B, so switch it back to B
-                set_hashmap[bj[i]] = SETB;
+                a.erase(bj[i]);
+                a.insert(ai[i]);
+                b.erase(ai[i]);
+                b.insert(bj[i]);
             }
         }
     } while (gmax > 0);
 
     //make sure set constraints are maintained
-    verify_set_constrs(set_hashmap);
+    verify_set_constrs(a, b);
 
     //print final partitioning
-    print_current_sets(set_hashmap);
-    cutset = compute_cutset(set_hashmap, c);
+    cutset = compute_cutset(a, b, c);
     std::cout << "final cutset: " << cutset << std::endl;
+    print_current_sets(a, b);
 
     int stop_s = clock();
     std::cout << "time: " << (stop_s - start_s)/double(CLOCKS_PER_SEC)*1000  << " ms" << std::endl;
