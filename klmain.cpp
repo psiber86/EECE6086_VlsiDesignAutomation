@@ -33,7 +33,8 @@ typedef struct {
     int thrId;
     std::set<int> a, b;
     std::map<int, int> dvals;
-    int numcores;
+    int numthreads; 
+    int unlockedsetsize;
 } threadParamInfo;
 
 typedef struct {
@@ -170,20 +171,22 @@ void *thr_compG(void *arg) {
     threadParamInfo *info = (threadParamInfo*)arg;
     int count = 0;
     std::set<int> suba;
-    int subcellcount = floor(info->a.size()/info->numcores);
+    int subcellcount = ceil(float(info->unlockedsetsize)/float(info->numthreads));
+    int start = subcellcount*info->thrId;
 
     //redefine set A based on input params
-    std::set<int>::iterator ia = info->a.begin();
-    //advance to starting cell
-    std::advance(ia, subcellcount*info->thrId);
-    if (debug) printf("creating subset of a with %i elements starting with element %i\n", subcellcount, *ia);
-    for (std::set<int>::iterator i = ia; i != info->a.end(); i++) {
-        if (count++ < subcellcount) {
+    if (debug) printf("thread%i creating subset of a with %i elements (%i unlocked/ %i threads): ", 
+                      info->thrId, subcellcount, info->unlockedsetsize, info->numthreads);
+    for (std::set<int>::iterator i = info->a.begin(); i != info->a.end(); i++) {
+        if (count >= start + subcellcount) {
+            break; 
+        } else if (start <= count) {
             suba.insert(*i);
-        } else {
-            break;
-        }
+            printf("%i ", *i);
+        } 
+        count++;
     }
+    printf("\n");
 
     gmaxReturnInfo *ret = compGmax(suba, info->b, info->dvals);
 
@@ -276,21 +279,30 @@ int main(int argc, char* argv[])
 
             //find a[i] from A1 and b[j] from B1, so g[n] = D[a[i]] + D[b[j]] - 2*c[a[i]][b[j]] is maximal
             if (CORES > 1) {
-                threadParamInfo paramInfo;
+                int numthreads;
+                threadParamInfo paramInfo[CORES];
                 pthread_t thr[CORES];
 
                 std::set<int>::iterator i1 = a.begin();
-                paramInfo.a = a;
-                paramInfo.b = b;
-                paramInfo.dvals = dvals;
-                paramInfo.numcores = CORES;
-                for (int i = 0; i < CORES; i++) {
-                    printf("spawning child thread %i to compute g for first 1/%i of set a cells\n", i, CORES);
-                    paramInfo.thrId = i;
-
-                    pthread_create(&thr[i], NULL, &thr_compG, (void*)&paramInfo);
+                if (a.size()-n < CORES) {
+                    numthreads = a.size()-n;
+                } else {
+                    numthreads = CORES;
                 }
-                for (int i = 0; i < CORES; i++) {
+                printf("%i unlocked cells in set a, creating %i threads\n", a.size()-n, numthreads);
+                for (int i = 0; i < numthreads; i++) {
+                    paramInfo[i].a = a;
+                    paramInfo[i].b = b;
+                    paramInfo[i].dvals = dvals;
+                    paramInfo[i].numthreads = numthreads;
+                    paramInfo[i].thrId = i;
+                    paramInfo[i].unlockedsetsize = a.size()-n;
+                    if(debug) printf("spawning child thread %i to compute g for first 1/%i of set a cells\n",
+                                     paramInfo[i].thrId, paramInfo[i].numthreads);
+
+                    pthread_create(&thr[i], NULL, &thr_compG, (void*)&paramInfo[i]);
+                }
+                for (int i = 0; i < numthreads; i++) {
                     void *p;
                     pthread_join(thr[i], &p);
                     gmaxReturnInfo *ret = static_cast<gmaxReturnInfo *>(p);
