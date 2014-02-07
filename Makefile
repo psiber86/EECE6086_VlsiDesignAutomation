@@ -7,7 +7,7 @@ parprog: klmain.o
 	$(CC) $(CFLAGS) klmain.o -o parprog
 
 klmain.o: klmain.cpp
-	$(CC) -c klmain.cpp
+	$(CC) $(CFLAGS) -c klmain.cpp
 
 clean:
 	rm -rf *.o parprog
