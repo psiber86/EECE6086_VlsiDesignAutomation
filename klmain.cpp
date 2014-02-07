@@ -30,6 +30,13 @@ enum {
     LOCKED
 };
 
+struct costInfo{
+    int cost;
+    int cell;
+    int set;
+    friend bool operator<(costInfo const& lhs, costInfo const& rhs) { return lhs.cost < rhs.cost; }
+};
+
 void print_matrix(int **mat)
 {
     for (int i1 = 1; i1 <= cellcount; i1++) {
@@ -60,19 +67,19 @@ int searchConnectionsForElement(int srccell, int dstcell, int min, int max)
 
 void verify_set_constrs(std::set<int> a, std::set<int> b)
 {
-    if(debug) printf("sizeof(a)=%i\tsizeof(b)=%i\n", a.size(), b.size());
+    if(debug) printf("sizeof(a)=%i\tsizeof(b)=%i\n", int(a.size()), int(b.size()));
     assert(a.size() == b.size());
-    assert(a.size() + b.size() == cellcount);
+    assert(int(a.size() + b.size()) == cellcount);
 }
 
-std::map<int, int> compDVals(int *setarray) 
+std::multiset<struct costInfo> compDVals(int *setarray, int curset) 
 {
-    std::map<int, int> d;
+    std::multiset<struct costInfo> ret;
     int intsum;
     int extsum;
    
     for (int i1 = 1; i1 <= cellcount; i1++) {
-        if (lock_hashmap[i1] == UNLOCKED) {
+        if (setarray[i1] == curset && lock_hashmap[i1] == UNLOCKED) {
             intsum = 0;
             extsum = 0;
 
@@ -85,11 +92,16 @@ std::map<int, int> compDVals(int *setarray)
                 }
             }
             if(debug) printf("cell %i has %i internal links and %i external links\n", i1, intsum, extsum);
+
+            struct costInfo cellinfo;
+            cellinfo.cost = extsum - intsum;
+            cellinfo.cell = i1;
+            cellinfo.set = curset;
+            ret.insert(cellinfo);
         } 
-        d[i1] = (extsum - intsum);
     }
 
-    return d;
+    return ret;
 }
 
 int compute_cutset(int *setarray)
@@ -123,15 +135,12 @@ void print_current_sets(std::set<int> a, std::set<int> b) {
 
 int main(int argc, char* argv[])
 {
-    int line;
     int linenum = 0;
-    int *setarray;
+    int *setarray = NULL;
     std::set<int> a, b;
     int cutset = 0;
     int gmax = -1000;
     int generation = 0;
-
-    int start_s = clock(); 
 
     if (argc < 1) {
         std::cout << "Usage: klalgo [-d]" << std::endl;
@@ -158,7 +167,7 @@ int main(int argc, char* argv[])
         } else {
             std::cin >> tmp2;
             if (!setarray[tmp1]) {
-                if (a.size() < cellcount/2) {
+                if (int(a.size()) < cellcount/2) {
                     if(debug) printf("inserting cell %i into set a\n", tmp1);
                     a.insert(tmp1); 
                     setarray[tmp1] = SETA;
@@ -200,7 +209,9 @@ int main(int argc, char* argv[])
         verify_set_constrs(a, b); 
 
         //compute D values for all a in A1 and b in B1    
-        std::map<int, int> dvals = compDVals(setarray);
+        std::multiset<struct costInfo> da = compDVals(setarray, SETA);
+        std::multiset<struct costInfo> db = compDVals(setarray, SETB);
+        
         if(debug) printf("**********************************************\n");
      
         int gmax = -1000;
@@ -212,7 +223,7 @@ int main(int argc, char* argv[])
         for (int n = 0; n < (cellcount/2); n++) {
             int gnmax = -1000;
             
-            printf("---- GENERATION: %i ITERATION: %i ----\n", generation++, n);
+            printf("---- GENERATION: %i ITERATION: %i ----\n", generation, n);
 
             if(debug) print_current_sets(a, b);
             if(debug) print_matrix(c);
@@ -220,40 +231,46 @@ int main(int argc, char* argv[])
             if(debug) printf("cutset = %i\n", cutset);
 
             //find a[i] from A1 and b[j] from B1, so g[n] = D[a[i]] + D[b[j]] - 2*c[a[i]][b[j]] is maximal
-            for (std::set<int>::iterator i1 = a.begin(); i1 != a.end(); i1++) {
-                if (lock_hashmap[*i1] != LOCKED) { 
-                    for (std::set<int>::iterator i2 = b.begin(); i2 != b.end(); i2++) {
-                        if (lock_hashmap[*i2] != LOCKED)
-                        {
+            //only compute for the first n largest D vals in each set
+            int acomps = 0;
+            for (std::multiset<struct costInfo>::reverse_iterator ia = da.rbegin(); ia != da.rend(); ia++) {
+                if (lock_hashmap[ia->cell] == UNLOCKED) {
+                    int bcomps = 0;
+                    for (std::multiset<struct costInfo>::reverse_iterator ib = db.rbegin(); ib != db.rend(); ib++) {
+                        if (lock_hashmap[ib->cell] == UNLOCKED) {
                             int g = 0;
-                            int c_i1_i2 = 0;
-                            int cellind = searchConnectionsForElement(*i1, *i2, 0, numlinks[*i1]);
+                            int c_a_b = 0;
+                            int cellind = searchConnectionsForElement(ia->cell, ib->cell, 0, numlinks[ia->cell]);
                             if (cellind >= 0) {
-                                c_i1_i2 = 1;
+                                c_a_b = 1;
                             }
                             
-                            g = dvals[*i1] + dvals[*i2] - (2 * c_i1_i2);
+                            g = ia->cost + ib->cost - (2 * c_a_b);
 
                             if(debug) {
                                 printf("\tg_%i_%i = D_%i + D_%i - 2c_%i_%i = %i + %i - 2(%i) = %i\n",
-                                        *i1, *i2, *i1, *i2, *i1, *i2,
-                                        dvals[*i1], dvals[*i2], c_i1_i2,
-                                        g);
+                                        ia->cell, ib->cell, ia->cell, ib->cell, ia->cell, ib->cell,
+                                        ia->cost, ib->cost, c_a_b, g);
                             }
                             if (g > gnmax) {
                                 gnmax = g;
-                                ai[n] = *i1;
-                                bj[n] = *i2;
+                                ai[n] = ia->cell;
+                                bj[n] = ib->cell;
                             }
-                        }
+
+                            if (bcomps++ > int(db.size()/10)) { break; }
+                        }  
                     }
+
+                    if (acomps++ > int(da.size()/10)) { break; }
                 }
             }
-
+          
             assert (ai[n] != 0 && bj[n] != 0);
             g[n] = gnmax;
 
-            if(debug) printf("1) found g[%i]=%i @ ai = %i, bi = %i\n", n, gnmax, ai[n], bj[n]); 
+            if(debug) printf("1) found g[%i]=%i @ ai = %i, bi = %i\n", 
+                             n, gnmax, ai[n], bj[n]); 
                     
             //move a[i] to B1 and b[j] to A1
             a.erase(ai[n]);
@@ -268,8 +285,6 @@ int main(int argc, char* argv[])
             //remove a[i] and b[j] from further consideration in this pass
             lock_hashmap[ai[n]] = LOCKED;
             lock_hashmap[bj[n]] = LOCKED;
-            dvals.erase(ai[n]);
-            dvals.erase(bj[n]);
 
             if(debug) printf("3) locking a[i]=%i and b[j]=%i\n", ai[n], bj[n]);
             
@@ -284,43 +299,81 @@ int main(int argc, char* argv[])
             //update D values for the elements of A1 = A1 \ a[i] and B1 = B1 \ b[j]
             if (n == (cellcount/2)-1) { continue; }
             if (debug) printf("recomputing dvals\n");
-            for (std::map<int, int>::iterator i1 = dvals.begin(); i1 != dvals.end(); i1++) {
-                //if connected to locked vertices
-                if (searchConnectionsForElement(i1->first, ai[n], 0, numlinks[i1->first]) < 0 &&
-                    searchConnectionsForElement(i1->first, bj[n], 0, numlinks[i1->first]) < 0) {
-                    continue;
-                }
-
-                int old_dval = dvals[i1->first];
-                int c_ai_curnode, c_bj_curnode = 0;
-                int ai_ind = searchConnectionsForElement(i1->first, ai[n], 0, numlinks[i1->first]);
-                if (ai_ind >= 0) {
-                    c_ai_curnode = 1;
-                } 
-               
-                int bj_ind = searchConnectionsForElement(i1->first, bj[n], 0, numlinks[i1->first]);
-                if (bj_ind >= 0) {
-                    c_bj_curnode = 1;
-                }
-
-                if (setarray[i1->first] == SETA) {
-                    dvals[i1->first] = old_dval + 2*(c_ai_curnode - c_bj_curnode);
+            //recompute set A costs
+            std::multiset<struct costInfo> tmpa;
+            for (std::multiset<struct costInfo>::iterator ia = da.begin(); ia != da.end(); ia++) {
+                int new_dval = 0;
+                struct costInfo tmpinfo;
+                //if not connected to locked vertices, just copy old dvalue
+                if (searchConnectionsForElement(ia->cell, ai[n], 0, numlinks[ia->cell]) < 0 &&
+                    searchConnectionsForElement(ia->cell, bj[n], 0, numlinks[ia->cell]) < 0) 
+                {
+                    new_dval = ia->cost;        
+                } else { 
+                    int old_dval = ia->cost;
+                    int c_ai_curnode, c_bj_curnode = 0;
+                    int ai_ind = searchConnectionsForElement(ia->cell, ai[n], 0, numlinks[ia->cell]);
+                    if (ai_ind >= 0) {
+                        c_ai_curnode = 1;
+                    }
+                    int bj_ind = searchConnectionsForElement(ia->cell, bj[n], 0, numlinks[ia->cell]);
+                    if (bj_ind >= 0) {
+                        c_bj_curnode = 1;
+                    }
+                    
+                    new_dval = old_dval + 2*(c_ai_curnode - c_bj_curnode);
                     if(debug) {
                         printf("\tD_%i' = D_%i + 2(c_%i_%i - c_%i_%i) = %i + 2(%i - %i) = %i\n",
-                               i1->first, i1->first, i1->first, ai[n], i1->first, bj[n], old_dval, c_ai_curnode, 
-                               c_bj_curnode, dvals[i1->first]); 
+                               ia->cell, ia->cell, ia->cell, ai[n], ia->cell, bj[n], old_dval, c_ai_curnode, 
+                               c_bj_curnode, ia->cost); 
                     }
-                } else if (setarray[i1->first] == SETB) {
-                    dvals[i1->first] = old_dval + 2*(c_bj_curnode - c_ai_curnode);
-                    if(debug) {
-                        printf("\tD_%i' = D_%i + 2(c_%i_%i - c_%i_%i) = %i + 2(%i - %i) = %i\n",
-                               i1->first, i1->first, i1->first, bj[n], i1->first, ai[n], old_dval, c_bj_curnode, 
-                               c_ai_curnode, dvals[i1->first]); 
-                    }
-                } else {
-                    printf("ERROR: SHOULD NOT GET HERE!\n");
                 }
+
+                tmpinfo.cost = new_dval;
+                tmpinfo.cell = ia->cell;
+                tmpinfo.set = SETA;
+                tmpa.insert(tmpinfo);
             }
+            //repeat for set b
+            std::multiset<struct costInfo> tmpb;
+            for (std::multiset<struct costInfo>::iterator ib = db.begin(); ib != db.end(); ib++) {
+                int new_dval = 0;
+                struct costInfo tmpinfo;
+                //if connected to locked vertices
+                if (searchConnectionsForElement(ib->cell, ai[n], 0, numlinks[ib->cell]) < 0 &&
+                    searchConnectionsForElement(ib->cell, bj[n], 0, numlinks[ib->cell]) < 0) 
+                {
+                    new_dval = ib->cost;
+                } else {
+                    int old_dval = ib->cost;
+                    int c_ai_curnode, c_bj_curnode = 0;
+                    int ai_ind = searchConnectionsForElement(ib->cell, ai[n], 0, numlinks[ib->cell]);
+                    if (ai_ind >= 0) {
+                        c_ai_curnode = 1;
+                    }
+                    int bj_ind = searchConnectionsForElement(ib->cell, bj[n], 0, numlinks[ib->cell]);
+                    if (bj_ind >= 0) {
+                        c_bj_curnode = 1;
+                    }
+                    
+                    new_dval = old_dval + 2*(c_bj_curnode - c_ai_curnode);
+                    if(debug) {
+                        printf("\tD_%i' = D_%i + 2(c_%i_%i - c_%i_%i) = %i + 2(%i - %i) = %i\n",
+                               ib->cell, ib->cell, ib->cell, bj[n], ib->cell, ai[n], old_dval, c_bj_curnode, 
+                               c_ai_curnode, ib->cost); 
+                    }
+                }
+
+                tmpinfo.cost = new_dval;
+                tmpinfo.cell = ib->cell;
+                tmpinfo.set = SETB;
+                tmpb.insert(tmpinfo);
+            }
+
+            da.clear();
+            db.clear();
+            da = tmpa;
+            db = tmpb;
         }
 
         //reset all cell locks
@@ -346,6 +399,8 @@ int main(int argc, char* argv[])
                 setarray[bj[i]] = SETB;
             }
         }
+
+        generation++;
     } while (gmax > 0);
 
     //make sure set constraints are maintained
