@@ -30,20 +30,6 @@ enum {
     LOCKED
 };
 
-typedef struct {
-    int thrId;
-    std::set<int> a, b;
-    std::map<int, int> dvals;
-    int numthreads; 
-    int unlockedsetsize;
-} threadParamInfo;
-
-typedef struct {
-    int ai;
-    int bj;
-    int gmax;
-} gmaxReturnInfo;
-
 void print_matrix(int **mat)
 {
     for (int i1 = 1; i1 <= cellcount; i1++) {
@@ -135,77 +121,6 @@ void print_current_sets(std::set<int> a, std::set<int> b) {
     printf("\n");
 }
 
-gmaxReturnInfo *compGmax(std::set<int> a, std::set<int> b, std::map<int, int> dvals)
-{
-    gmaxReturnInfo *ret = (gmaxReturnInfo*)malloc(sizeof(gmaxReturnInfo));
-    if (ret == NULL) {
-        printf("MALLOC ERROR\n");
-        exit(1);
-    }
-    int gmax = -1000;
-    int g = 0;
-
-    for (std::set<int>::iterator i1 = a.begin(); i1 != a.end(); i1++) {
-        if (lock_hashmap[*i1] != LOCKED) { 
-            for (std::set<int>::iterator i2 = b.begin(); i2 != b.end(); i2++) {
-                if (lock_hashmap[*i2] != LOCKED)
-                {
-                    int c_i1_i2 = 0;
-                    int cellind = searchConnectionsForElement(*i1, *i2, 0, numlinks[*i1]);
-                    if (cellind >= 0) {
-                        c_i1_i2 = 1;
-                    }
-                    
-                    g = dvals[*i1] + dvals[*i2] - (2 * c_i1_i2);
-
-                    if(debug) {
-                        printf("\tg_%i_%i = D_%i + D_%i - 2c_%i_%i = %i + %i - 2(%i) = %i\n",
-                                *i1, *i2, *i1, *i2, *i1, *i2,
-                                dvals[*i1], dvals[*i2], c_i1_i2,
-                                g);
-                    }
-                    if (g > gmax) {
-                        gmax = g;
-                        ret->gmax = g;
-                        ret->ai = *i1;
-                        ret->bj = *i2;
-                    }
-                }
-            }
-        }
-    }
-    return ret;
-}
-
-//void *thr_compG(void *arg) {
-//    threadParamInfo *info = (threadParamInfo*)arg;
-//    int count = 0;
-//    std::set<int> suba;
-//    int subcellcount = ceil(float(info->unlockedsetsize)/float(info->numthreads));
-//    int start = subcellcount*info->thrId;
-//
-//    //redefine set A based on input params
-//    if (debug) printf("thread%i creating subset of a with %i elements (%i unlocked/ %i threads): ", 
-//                      info->thrId, subcellcount, info->unlockedsetsize, info->numthreads);
-//    for (std::set<int>::iterator i = info->a.begin(); i != info->a.end(); i++) {
-//        if (count >= start + subcellcount) {
-//            break; 
-//        } else if (start <= count) {
-//            suba.insert(*i);
-//            printf("%i ", *i);
-//        } 
-//        count++;
-//    }
-//    printf("\n");
-//
-//    gmaxReturnInfo *ret = compGmax(suba, info->b, info->dvals);
-//
-//    if(debug) printf("thread%i found g=%i @ ai = %i, bi = %i\n", info->thrId, ret->gmax, ret->ai, ret->bj); 
-//
-//    return (void*) ret; 
-//}
-
-
 int main(int argc, char* argv[])
 {
     int line;
@@ -280,8 +195,6 @@ int main(int argc, char* argv[])
 
     links.clear(); 
 
-    print_matrix(c);
-
     do {
         //make sure initial coniditions are satisfied
         verify_set_constrs(a, b); 
@@ -307,47 +220,34 @@ int main(int argc, char* argv[])
             if(debug) printf("cutset = %i\n", cutset);
 
             //find a[i] from A1 and b[j] from B1, so g[n] = D[a[i]] + D[b[j]] - 2*c[a[i]][b[j]] is maximal
-            if (CORES > 1) {
-//                int numthreads;
-//                threadParamInfo paramInfo[CORES];
-//                pthread_t thr[CORES];
-//
-//                std::set<int>::iterator i1 = a.begin();
-//                if (a.size()-n < CORES) {
-//                    numthreads = a.size()-n;
-//                } else {
-//                    numthreads = CORES;
-//                }
-//                printf("%i unlocked cells in set a, creating %i threads\n", a.size()-n, numthreads);
-//                for (int i = 0; i < numthreads; i++) {
-//                    paramInfo[i].a = a;
-//                    paramInfo[i].b = b;
-//                    paramInfo[i].dvals = dvals;
-//                    paramInfo[i].numthreads = numthreads;
-//                    paramInfo[i].thrId = i;
-//                    paramInfo[i].unlockedsetsize = a.size()-n;
-//                    if(debug) printf("spawning child thread %i to compute g for first 1/%i of set a cells\n",
-//                                     paramInfo[i].thrId, paramInfo[i].numthreads);
-//
-//                    pthread_create(&thr[i], NULL, &thr_compG, (void*)&paramInfo[i]);
-//                }
-//                for (int i = 0; i < numthreads; i++) {
-//                    void *p;
-//                    pthread_join(thr[i], &p);
-//                    gmaxReturnInfo *ret = static_cast<gmaxReturnInfo *>(p);
-//
-//                    //compare gmax returned from threads
-//                    if (ret->gmax > gnmax) {
-//                        gnmax = ret->gmax;
-//                        ai[n] = ret->ai;
-//                        bj[n] = ret->bj;
-//                    }
-//                }
-            } else {
-                gmaxReturnInfo *ret = compGmax(a, b, dvals);
-                ai[n] = ret->ai;
-                bj[n] = ret->bj;
-                gnmax = ret->gmax;
+            for (std::set<int>::iterator i1 = a.begin(); i1 != a.end(); i1++) {
+                if (lock_hashmap[*i1] != LOCKED) { 
+                    for (std::set<int>::iterator i2 = b.begin(); i2 != b.end(); i2++) {
+                        if (lock_hashmap[*i2] != LOCKED)
+                        {
+                            int g = 0;
+                            int c_i1_i2 = 0;
+                            int cellind = searchConnectionsForElement(*i1, *i2, 0, numlinks[*i1]);
+                            if (cellind >= 0) {
+                                c_i1_i2 = 1;
+                            }
+                            
+                            g = dvals[*i1] + dvals[*i2] - (2 * c_i1_i2);
+
+                            if(debug) {
+                                printf("\tg_%i_%i = D_%i + D_%i - 2c_%i_%i = %i + %i - 2(%i) = %i\n",
+                                        *i1, *i2, *i1, *i2, *i1, *i2,
+                                        dvals[*i1], dvals[*i2], c_i1_i2,
+                                        g);
+                            }
+                            if (g > gnmax) {
+                                gnmax = g;
+                                ai[n] = *i1;
+                                bj[n] = *i2;
+                            }
+                        }
+                    }
+                }
             }
 
             assert (ai[n] != 0 && bj[n] != 0);
