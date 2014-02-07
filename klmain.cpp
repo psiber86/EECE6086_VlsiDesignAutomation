@@ -5,6 +5,7 @@
 #include <string>
 #include <map>
 #include <set>
+#include <list>
 #include <cstring>
 #include <assert.h>
 #include <pthread.h>
@@ -60,16 +61,16 @@ int searchConnectionsForElement(int srccell, int dstcell, int min, int max)
 
 void verify_set_constrs(std::set<int> a, std::set<int> b)
 {
-    if(debug) printf("sizeof(a)=%i\tsizeof(b)=%i\n", a.size(), b.size());
+    if(debug) printf("sizeof(a)=%i\tsizeof(b)=%i\n", int(a.size()), int(b.size()));
     assert(a.size() == b.size());
-    assert(a.size() + b.size() == cellcount);
+    assert(int(a.size() + b.size()) == cellcount);
 }
 
 std::map<int, int> compDVals(int *setarray) 
 {
     std::map<int, int> d;
-    int intsum;
-    int extsum;
+    int intsum = 0;
+    int extsum = 0;
    
     for (int i1 = 1; i1 <= cellcount; i1++) {
         if (lock_hashmap[i1] == UNLOCKED) {
@@ -123,15 +124,12 @@ void print_current_sets(std::set<int> a, std::set<int> b) {
 
 int main(int argc, char* argv[])
 {
-    int line;
     int linenum = 0;
-    int *setarray;
+    int *setarray = NULL;
     std::set<int> a, b;
     int cutset = 0;
     int gmax = -1000;
     int generation = 0;
-
-    int start_s = clock(); 
 
     if (argc < 1) {
         std::cout << "Usage: klalgo [-d]" << std::endl;
@@ -158,7 +156,7 @@ int main(int argc, char* argv[])
         } else {
             std::cin >> tmp2;
             if (!setarray[tmp1]) {
-                if (a.size() < cellcount/2) {
+                if (int(a.size()) < cellcount/2) {
                     if(debug) printf("inserting cell %i into set a\n", tmp1);
                     a.insert(tmp1); 
                     setarray[tmp1] = SETA;
@@ -206,12 +204,11 @@ int main(int argc, char* argv[])
         int gmax = -1000;
         int finalk = 0;
         int sum = 0;
-        int g[cellcount/2];
-        int ai[cellcount/2];
-        int bj[cellcount/2];
+        int *g[cellcount/2];
+        int *ai[cellcount/2];
+        int *bj[cellcount/2];
+        int numunlocked = a.size();
         for (int n = 0; n < (cellcount/2); n++) {
-            int gnmax = -1000;
-            
             printf("---- GENERATION: %i ITERATION: %i ----\n", generation++, n);
 
             if(debug) print_current_sets(a, b);
@@ -219,62 +216,104 @@ int main(int argc, char* argv[])
             cutset = compute_cutset(setarray);
             if(debug) printf("cutset = %i\n", cutset);
 
-            //find a[i] from A1 and b[j] from B1, so g[n] = D[a[i]] + D[b[j]] - 2*c[a[i]][b[j]] is maximal
+            //find a[i]s from A1 and b[j]s from B1, so top %5 g[n] = D[a[i]] + D[b[j]] - 2*c[a[i]][b[j]] is maximal
+            int swapcount = ceil(float(numunlocked)*0.05);
+            std::list<int> topGvals;
+            std::list<int> ai_list;
+            std::list<int> bj_list;
+            //corresponding arrays for later parsing
+            g[n] = new int[swapcount];
+            ai[n] = new int[swapcount];
+            bj[n] = new int[swapcount];
+            
+            ai_list.resize(swapcount);
+            bj_list.resize(swapcount);
             for (std::set<int>::iterator i1 = a.begin(); i1 != a.end(); i1++) {
                 if (lock_hashmap[*i1] != LOCKED) { 
                     for (std::set<int>::iterator i2 = b.begin(); i2 != b.end(); i2++) {
                         if (lock_hashmap[*i2] != LOCKED)
                         {
-                            int g = 0;
+                            int tmpg = 0;
                             int c_i1_i2 = 0;
                             int cellind = searchConnectionsForElement(*i1, *i2, 0, numlinks[*i1]);
                             if (cellind >= 0) {
                                 c_i1_i2 = 1;
                             }
                             
-                            g = dvals[*i1] + dvals[*i2] - (2 * c_i1_i2);
+                            tmpg = dvals[*i1] + dvals[*i2] - (2 * c_i1_i2);
 
                             if(debug) {
                                 printf("\tg_%i_%i = D_%i + D_%i - 2c_%i_%i = %i + %i - 2(%i) = %i\n",
                                         *i1, *i2, *i1, *i2, *i1, *i2,
                                         dvals[*i1], dvals[*i2], c_i1_i2,
-                                        g);
+                                        tmpg);
                             }
-                            if (g > gnmax) {
-                                gnmax = g;
-                                ai[n] = *i1;
-                                bj[n] = *i2;
+                        
+                            if (topGvals.empty()) {
+                                topGvals.insert(topGvals.begin(), tmpg);
+                                ai_list.insert(ai_list.begin(), *i1);
+                                bj_list.insert(bj_list.begin(), *i2);
+                                if(debug) printf("inserting %i into empty list\n", tmpg);
+                            } else {
+                                std::list<int>::iterator it_g = topGvals.begin();
+                                std::list<int>::iterator it_a = ai_list.begin();
+                                std::list<int>::iterator it_b = bj_list.begin();
+                                for (int i3 = 0; i3 < int(topGvals.size()); i3++) {
+                                    if(debug) printf("comparing %i to list item %i\n", tmpg, *it_g);
+                                    if (tmpg > *it_g) {
+                                        //insert new element before lower value
+                                        topGvals.insert(it_g++, *it_g);
+                                        ai_list.insert(it_a++, *i1);
+                                        bj_list.insert(it_b++, *i2);
+                                        //remove smallest element
+                                        topGvals.pop_back();
+                                        ai_list.pop_back();
+                                        bj_list.pop_back();
+
+                                        assert(*i1 != 0 && *i2 != 0);
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
 
-            assert (ai[n] != 0 && bj[n] != 0);
-            g[n] = gnmax;
-
-            if(debug) printf("1) found g[%i]=%i @ ai = %i, bi = %i\n", n, gnmax, ai[n], bj[n]); 
+            int count = 0;
+            for (int i4 = 0; i4 < swapcount; i4++) {
+                std::list<int>::iterator it_g = topGvals.begin();
+                std::list<int>::iterator it_a = ai_list.begin();
+                std::list<int>::iterator it_b = bj_list.begin();
+                g[n][count] = *it_g;
+                ai[n][count] = *it_a; 
+                bj[n][count++] = *it_b;
+                ++it_g;
+                ++it_a;
+                ++it_b;
+            }
+            if(debug) printf("1) found g[%i]=%i @ ai = %i, bi = %i\n", n, g[n][0], ai[n][0], bj[n][0]); 
                     
             //move a[i] to B1 and b[j] to A1
-            a.erase(ai[n]);
-            a.insert(bj[n]);
-            b.erase(bj[n]);
-            b.insert(ai[n]);
-            setarray[ai[n]] = SETB;
-            setarray[bj[n]] = SETA;
+            a.erase(ai[n][0]);
+            a.insert(bj[n][0]);
+            b.erase(bj[n][0]);
+            b.insert(ai[n][0]);
+            setarray[ai[n][0]] = SETB;
+            setarray[bj[n][0]] = SETA;
 
-            if(debug) printf("2) swapped a[i]=%i with b[j]=%i\n", ai[n], bj[n]);
+            if(debug) printf("2) swapped a[i]=%i with b[j]=%i\n", ai[n][0], bj[n][0]);
 
             //remove a[i] and b[j] from further consideration in this pass
-            lock_hashmap[ai[n]] = LOCKED;
-            lock_hashmap[bj[n]] = LOCKED;
-            dvals.erase(ai[n]);
-            dvals.erase(bj[n]);
+            numunlocked = numunlocked - swapcount;
+            lock_hashmap[ai[n][0]] = LOCKED;
+            lock_hashmap[bj[n][0]] = LOCKED;
+            dvals.erase(ai[n][0]);
+            dvals.erase(bj[n][0]);
 
-            if(debug) printf("3) locking a[i]=%i and b[j]=%i\n", ai[n], bj[n]);
+            if(debug) printf("3) locking a[i]=%i and b[j]=%i\n", ai[n][0], bj[n][0]);
             
             //find k which maximizes gmax, the sum of g[0],...,g[k]
-            sum += g[n];
+            sum += g[n][0];
             if (sum > gmax) {
                 gmax = sum;
                 finalk = n;
@@ -286,19 +325,19 @@ int main(int argc, char* argv[])
             if (debug) printf("recomputing dvals\n");
             for (std::map<int, int>::iterator i1 = dvals.begin(); i1 != dvals.end(); i1++) {
                 //if connected to locked vertices
-                if (searchConnectionsForElement(i1->first, ai[n], 0, numlinks[i1->first]) < 0 &&
-                    searchConnectionsForElement(i1->first, bj[n], 0, numlinks[i1->first]) < 0) {
+                if (searchConnectionsForElement(i1->first, ai[n][0], 0, numlinks[i1->first]) < 0 &&
+                    searchConnectionsForElement(i1->first, bj[n][0], 0, numlinks[i1->first]) < 0) {
                     continue;
                 }
 
                 int old_dval = dvals[i1->first];
                 int c_ai_curnode, c_bj_curnode = 0;
-                int ai_ind = searchConnectionsForElement(i1->first, ai[n], 0, numlinks[i1->first]);
+                int ai_ind = searchConnectionsForElement(i1->first, ai[n][0], 0, numlinks[i1->first]);
                 if (ai_ind >= 0) {
                     c_ai_curnode = 1;
                 } 
                
-                int bj_ind = searchConnectionsForElement(i1->first, bj[n], 0, numlinks[i1->first]);
+                int bj_ind = searchConnectionsForElement(i1->first, bj[n][0], 0, numlinks[i1->first]);
                 if (bj_ind >= 0) {
                     c_bj_curnode = 1;
                 }
@@ -307,14 +346,14 @@ int main(int argc, char* argv[])
                     dvals[i1->first] = old_dval + 2*(c_ai_curnode - c_bj_curnode);
                     if(debug) {
                         printf("\tD_%i' = D_%i + 2(c_%i_%i - c_%i_%i) = %i + 2(%i - %i) = %i\n",
-                               i1->first, i1->first, i1->first, ai[n], i1->first, bj[n], old_dval, c_ai_curnode, 
+                               i1->first, i1->first, i1->first, ai[n][0], i1->first, bj[n][0], old_dval, c_ai_curnode, 
                                c_bj_curnode, dvals[i1->first]); 
                     }
                 } else if (setarray[i1->first] == SETB) {
                     dvals[i1->first] = old_dval + 2*(c_bj_curnode - c_ai_curnode);
                     if(debug) {
                         printf("\tD_%i' = D_%i + 2(c_%i_%i - c_%i_%i) = %i + 2(%i - %i) = %i\n",
-                               i1->first, i1->first, i1->first, bj[n], i1->first, ai[n], old_dval, c_bj_curnode, 
+                               i1->first, i1->first, i1->first, bj[n][0], i1->first, ai[n][0], old_dval, c_bj_curnode, 
                                c_ai_curnode, dvals[i1->first]); 
                     }
                 } else {
@@ -337,13 +376,13 @@ int main(int argc, char* argv[])
 
             //exchange a[1], a[2],...,a[k] with b[1], b[2],...b[k]
             for (int i = 0; i <= finalk; i++) {
-                if(debug) printf("swapping %i with %i\n", ai[i], bj[i]);
-                a.erase(bj[i]);
-                a.insert(ai[i]);
-                b.erase(ai[i]);
-                b.insert(bj[i]);
-                setarray[ai[i]] = SETA;
-                setarray[bj[i]] = SETB;
+                if(debug) printf("swapping %i with %i\n", ai[i][0], bj[i][0]);
+                a.erase(bj[i][0]);
+                a.insert(ai[i][0]);
+                b.erase(ai[i][0]);
+                b.insert(bj[i][0]);
+                setarray[ai[i][0]] = SETA;
+                setarray[bj[i][0]] = SETB;
             }
         }
     } while (gmax > 0);
